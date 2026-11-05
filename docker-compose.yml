@@ -1,0 +1,72 @@
+# Full stack: API + scheduler, Postgres, Redis.
+#
+# Postgres and Redis are health-gated. `depends_on` alone only waits for a
+# container to START, not to be READY - Postgres takes several seconds to
+# accept connections, so without the condition the app wins the race only
+# sometimes.
+
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      FEED_DATABASE_URL: postgresql+psycopg://feed:feed@postgres:5432/feed
+      FEED_REDIS_ENABLED: "true"
+      # Service name, not localhost: each container has its own loopback.
+      FEED_REDIS_URL: redis://redis:6379/0
+      FEED_FEED_URLS: https://hnrss.org/frontpage
+      FEED_SCHEDULE_MINUTES: "15"
+      FEED_RUN_ON_STARTUP: "true"
+      FEED_WEBHOOK_SECRET: local-dev-secret
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Same image, no HTTP server: the job on a schedule only. This is the second
+  # deployment shape - in Kubernetes this becomes a CronJob.
+  worker:
+    build: .
+    command: ["python", "-m", "app.main", "run-once"]
+    restart: "no"
+    environment:
+      FEED_DATABASE_URL: postgresql+psycopg://feed:feed@postgres:5432/feed
+      FEED_REDIS_ENABLED: "true"
+      FEED_REDIS_URL: redis://redis:6379/0
+      FEED_FEED_URLS: https://hnrss.org/frontpage
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: feed
+      POSTGRES_PASSWORD: feed
+      POSTGRES_DB: feed
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U feed -d feed"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:
